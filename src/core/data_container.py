@@ -1,4 +1,3 @@
-from __future__ import annotations
 """
 data_container.py
 
@@ -9,6 +8,8 @@ Uses efficient storage: flat arrays for floats and bit arrays for status.
 Provides utility methods for metadata access.
 Includes integrated unit tests when run as main.
 """
+
+from __future__ import annotations
 
 from collections import deque, defaultdict
 from datetime import datetime, timedelta

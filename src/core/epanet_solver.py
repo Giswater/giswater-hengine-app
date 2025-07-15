@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Module for defining and executing EPANET simulations.
 
@@ -35,7 +33,7 @@ Key components:
   all configured analyses.
 """
 
-
+from __future__ import annotations
 
 import logging
 from pathlib import Path
