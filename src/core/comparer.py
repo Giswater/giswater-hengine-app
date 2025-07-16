@@ -14,40 +14,51 @@ VARIABLE_MAP: dict[str, dict[str, int]] = {
         'head': tk.HEAD,
         'pressure': tk.PRESSURE,
         'quality': tk.QUALITY,
-        'source_mass': tk.SOURCEMASS,
+        'source_mass': tk.SOURCEMASS
     },
     'RESERVOIRS': {
         'inflow': tk.DEMAND,
         'elevation': tk.HEAD,
-        'pressure': tk.PRESSURE,
         'quality': tk.QUALITY,
+        'source_mass': tk.SOURCEMASS
     },
     'TANKS': {
         'inflow': tk.DEMAND,
         'elevation': tk.HEAD,
-        'pressure': tk.PRESSURE,
+        'tank_level': tk.TANKLEVEL,
+        'tank_volume' : tk.TANKVOLUME,
         'quality': tk.QUALITY,
+        'source_mass': tk.SOURCEMASS
     },
     'PIPES': {
         'flow': tk.FLOW,
         'velocity': tk.VELOCITY,
         'headloss': tk.HEADLOSS,
         'status': tk.STATUS,
+        # Link status can be:
+        # CLOSED = 0
+        # OPEN = 1
+        'quality' : tk.LINKQUAL
     },
     'VALVES': {
         'flow': tk.FLOW,
         'velocity': tk.VELOCITY,
         'headloss': tk.HEADLOSS,
-        'status': tk.STATUS,
-        'set_point': tk.SETTING,
+        'status': tk.STATUS
+        # See PIPES
     },
     'PUMPS': {
         'flow': tk.FLOW,
         'velocity': tk.VELOCITY,
-        'headloss': tk.HEADLOSS,
-        'status': tk.STATUS,
-        'speed': tk.SETTING,
+        'head': tk.HEADLOSS,
         'energy': tk.ENERGY,
+        'pump_efficiency' : tk.PUMP_EFFIC,
+        'pump_state': tk.PUMP_STATE
+        # Pump state can be:
+        # PUMP_XHEAD   = 0,  //!< Pump closed - cannot supply head
+        # PUMP_CLOSED  = 2,  //!< Pump closed
+        # PUMP_OPEN    = 3,  //!< Pump open
+        # PUMP_XFLOW   = 5   //!< Pump open - cannot supply flow
     },
 }
 
@@ -101,9 +112,9 @@ class Comparer:
         # Open proyect handles
         self._open(self.inp1)
         self._open(self.inp2)
-        
+
         #
-        
+
         # Close project handles
         self._close(self._handle1)
         self._close(self._handle2)
