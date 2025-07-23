@@ -1,0 +1,2 @@
+owa-epanet>=2.2.4
+# pygmo>=2.19.5 # calibrator
