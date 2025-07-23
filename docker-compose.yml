@@ -1,0 +1,18 @@
+services:
+  giswater-hengine-app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./uploads:/app/uploads
+      - .:/app
+    environment:
+      - ENV=development
+    restart: unless-stopped
+    networks:
+      api-network:
+        ipv4_address: 172.21.1.51
+
+networks:
+  api-network:
+    external: true
