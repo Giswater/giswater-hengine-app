@@ -14,73 +14,82 @@ giswater-hengine-app/
 │       ├── database.py      # SQLModel database models and connection
 │       └── __init__.py
 ├── uploads/                 # Directory for uploaded INP files (auto-created)
+├── pg_service.conf.template # PostgreSQL service configuration template
+├── .env.example             # Environment variables template
 ├── requirements.txt         # Python dependencies
 ├── Dockerfile              # Docker configuration
 ├── docker-compose.yml      # Docker Compose setup with PostgreSQL
+├── start.sh                # Shell script to start the application
 └── README.md               # This file
 ```
 
 ## 🗄️ Database
 
-This application uses **PostgreSQL** with **SQLModel** for storing file metadata:
+This application uses **PostgreSQL** with **SQLModel** and **pgservice** for database connection management:
 
 - **Database**: PostgreSQL 15
 - **ORM**: SQLModel (built on SQLAlchemy)
-- **Tables**: `inp_files` - stores file metadata (ID, filename, path, size, upload time)
+- **Connection**: PostgreSQL service files (pgservice)
+- **Schemas**: Configurable schemas for WS, UD, and AUDIT data
 - **Features**: Automatic table creation, connection pooling, session management
 
-### Database Schema
+### Database Connection Architecture
 
-```sql
-CREATE TABLE inp_files (
-    id SERIAL PRIMARY KEY,
-    file_id VARCHAR UNIQUE NOT NULL,
-    filename VARCHAR NOT NULL,
-    file_path VARCHAR NOT NULL,
-    file_size INTEGER NOT NULL,
-    upload_time TIMESTAMP NOT NULL
-);
-```
+The application uses PostgreSQL service files (pgservice) for database configuration:
+
+- **pg_service.conf.template**: Template file with connection parameters
+- **Runtime Configuration**: Template is processed to create `/etc/postgresql-common/pg_service.conf`
+- **Connection String**: `postgresql:///?service={PGSERVICE}`
+- **Schema Support**: Multiple schemas (WS, UD, AUDIT) for data organization
 
 ## 🚀 Quick Start
 
-### 1️⃣ **Set Up Virtual Environment**
+### 1️⃣ **Environment Configuration**
+
+Copy the environment template and configure your settings:
 
 ```bash
 cd api-server/giswater-hengine-app
+cp .env.example .env
+```
+
+Edit `.env` file with your configuration:
+
+```bash
+# PostgreSQL Database Configuration
+POSTGRES_PASSWORD=your_secure_password_here
+```
+
+### 2️⃣ **Set Up Virtual Environment**
+
+```bash
 python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2️⃣ **Database Setup**
+### 3️⃣ **Database Setup & Run**
 
 **Option A: Using Docker Compose (Recommended)**
 ```bash
-docker-compose up -d postgres  # Start only PostgreSQL
+# Create network and start all services
+./start.sh
+
+# Or manually:
+docker network create --subnet=172.21.1.0/24 api-network-2
+docker-compose up --build
 ```
 
-**Option B: Local PostgreSQL**
+**Option B: Local PostgreSQL with pgservice**
 ```bash
 # Install PostgreSQL and create database
 createdb giswater_hengine
-```
 
-### 3️⃣ **Environment Variables**
+# Configure pgservice
+sudo mkdir -p /etc/postgresql-common
+envsubst < pg_service.conf.template | sudo tee /etc/postgresql-common/pg_service.conf
 
-Set the following environment variables (or use defaults):
-
-```bash
-export DATABASE_HOST=localhost
-export DATABASE_PORT=5432
-export DATABASE_NAME=giswater_hengine
-export DATABASE_USER=postgres
-export DATABASE_PASSWORD=postgres
-```
-
-### 4️⃣ **Run Locally**
-
-```bash
+# Run application
 uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -93,11 +102,12 @@ uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
 ### **Complete Setup with Docker Compose**
 
 ```bash
-# Create the external network (if it doesn't exist)
-docker network create --subnet=172.21.1.0/24 api-network
+# Make sure you have a .env file configured
+cp .env.example .env
+# Edit .env with your settings
 
-# Start all services (PostgreSQL + API)
-docker-compose up --build
+# Use the start script (creates network automatically)
+./start.sh
 ```
 
 ### **Individual Docker Commands**
@@ -108,9 +118,10 @@ docker build -t giswater-hengine-app .
 
 # Run with external PostgreSQL
 docker run -d -p 8000:8000 \
-  -e DATABASE_HOST=your_postgres_host \
-  -e DATABASE_PASSWORD=your_password \
+  -e PGSERVICE=giswater_hengine \
+  -e POSTGRES_PASSWORD=your_password \
   -v $(pwd)/uploads:/app/uploads \
+  -v $(pwd)/pg_service.conf.template:/tmp/pg_service.conf.template:ro \
   giswater-hengine-app
 ```
 
@@ -189,30 +200,46 @@ Delete an INP file from both disk storage and database.
 
 ## 🔧 Configuration
 
+### Environment Variables
+
+The application uses a `.env` file for configuration:
+
+```bash
+# Database Configuration
+POSTGRES_PASSWORD=your_secure_password  # Required: PostgreSQL password
+```
+
+### PostgreSQL Service Configuration
+
+The `pg_service.conf.template` defines database connection parameters:
+
+```ini
+[giswater_hengine]
+host=postgres
+port=5432
+dbname=giswater_hengine
+user=postgres
+password=${POSTGRES_PASSWORD}
+```
+
+**Note**: The template is processed at runtime to substitute environment variables.
+
 ### File Upload Limits
 - **Allowed Extensions:** `.inp` only
-- **Maximum File Size:** 10MB
+- **Maximum File Size:** 250MB
 - **Upload Directory:** `uploads/` (auto-created)
 
-### Database Configuration
-- **Host:** `DATABASE_HOST` (default: localhost)
-- **Port:** `DATABASE_PORT` (default: 5432)
-- **Database:** `DATABASE_NAME` (default: giswater_hengine)
-- **User:** `DATABASE_USER` (default: postgres)
-- **Password:** `DATABASE_PASSWORD` (default: postgres)
-
-### File Storage
-- Files are stored with UUID prefixes to prevent conflicts
-- Metadata is stored in PostgreSQL `inp_files` table
-- Original filenames are preserved in database
-- Automatic cleanup of orphaned database records
+### Docker Networking
+- **API Container**: 172.21.1.51:8000
+- **PostgreSQL Container**: 172.21.1.52:5432
+- **Network**: `api-network-2` (auto-created by start.sh)
 
 ---
 
 ## 🧪 Testing the API
 
 ### Using the Interactive API Documentation
-1. Start the server (with database)
+1. Start the server: `./start.sh`
 2. Navigate to `http://localhost:8000/docs`
 3. Use the built-in Swagger UI to test endpoints
 
@@ -255,6 +282,28 @@ curl -X DELETE http://localhost:8000/inp/files/{file_id}
 - **Migration Tool:** Alembic 1.13.3
 - **Validation:** Pydantic 2.10.6
 - **Server:** Uvicorn 0.34.0
+- **Connection Management:** PostgreSQL service files (pgservice)
+
+## 🗄️ Database Schema Architecture
+
+The application supports multiple schemas for data organization:
+
+```sql
+-- Schemas created automatically
+CREATE SCHEMA IF NOT EXISTS ws_42;    -- Water supply data
+CREATE SCHEMA IF NOT EXISTS ud_42;    -- Urban drainage data
+CREATE SCHEMA IF NOT EXISTS audit;    -- Audit trail data
+
+-- Example table structure
+CREATE TABLE ws_42.inp_files (
+    id SERIAL PRIMARY KEY,
+    file_id VARCHAR UNIQUE NOT NULL,
+    filename VARCHAR NOT NULL,
+    file_path VARCHAR NOT NULL,
+    file_size INTEGER NOT NULL,
+    upload_time TIMESTAMP NOT NULL
+);
+```
 
 ## 🔄 Database Migrations
 
@@ -276,7 +325,7 @@ alembic upgrade head
 ## 📁 File Management
 
 - **Storage**: Files stored in `uploads/` directory with UUID prefixes
-- **Database**: Metadata stored in PostgreSQL with referential integrity
+- **Database**: Metadata stored in PostgreSQL with schema separation
 - **Cleanup**: Automatic cleanup of orphaned records when files are missing
 - **Concurrency**: Safe concurrent access with database sessions
 
@@ -285,10 +334,11 @@ alembic upgrade head
 ## 🔗 Integration with Giswater
 
 This API follows similar patterns to the main giswater-api:
-- Consistent response formats with `status`, `message`, and data fields
-- Similar project structure and organization
-- Compatible Docker networking (API: 172.21.1.51, DB: 172.21.1.52)
-- Database-first approach for reliability
+- **pgservice Configuration**: Consistent database connection management
+- **Schema Structure**: Multi-schema approach for data organization
+- **Response Formats**: Consistent `status`, `message`, and data fields
+- **Docker Networking**: Compatible networking (API: 172.21.1.51, DB: 172.21.1.52)
+- **Environment Management**: `.env` file configuration approach
 
 ---
 
@@ -302,14 +352,42 @@ docker-compose ps
 # Check database logs
 docker-compose logs postgres
 
-# Test database connection
-docker-compose exec postgres psql -U postgres -d giswater_hengine -c "\dt"
+# Test database connection using pgservice
+docker-compose exec giswater-hengine-app psql "service=giswater_hengine" -c "\dt"
+
+# Verify pgservice configuration
+docker-compose exec giswater-hengine-app cat /etc/postgresql-common/pg_service.conf
+```
+
+### Environment Configuration Issues
+```bash
+# Check environment variables
+docker-compose exec giswater-hengine-app env | grep -E "(POSTGRES|PGSERVICE|SCHEMA)"
+
+# Verify .env file
+cat .env
+
+# Test database connection from application
+docker-compose exec giswater-hengine-app python src/api/test_db.py
 ```
 
 ### Application Logs
 ```bash
 # View application logs
 docker-compose logs giswater-hengine-app
+
+# Follow logs in real-time
+docker-compose logs -f giswater-hengine-app
+```
+
+### Network Issues
+```bash
+# Check if network exists
+docker network ls | grep api-network-2
+
+# Recreate network if needed
+docker network rm api-network-2
+./start.sh
 ```
 
 ---
