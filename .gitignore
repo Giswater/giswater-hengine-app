@@ -35,6 +35,7 @@ env/
 # Project specific
 uploads/*
 !uploads/.gitkeep
+postgres_data/
 
 # Logs
 *.log

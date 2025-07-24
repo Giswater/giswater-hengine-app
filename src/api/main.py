@@ -4,21 +4,41 @@ Provides endpoints for uploading and managing INP files for hydraulic modeling.
 Following similar patterns to the giswater-api for consistency.
 """
 import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from .routes import router as inp_router
+from .database import create_db_and_tables
 
 TITLE = "Giswater Hydraulic Engine API"
 VERSION = "0.1.0"
 DESCRIPTION = "API for managing INP files and hydraulic modeling with EPANET."
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan events"""
+    # Startup
+    try:
+        create_db_and_tables()
+        print("Database tables created successfully")
+    except Exception as e:
+        print(f"Error creating database tables: {e}")
+    
+    yield
+    
+    # Shutdown
+    print("Application shutting down")
+
+
 app = FastAPI(
     version=VERSION,
     title=TITLE,
     description=DESCRIPTION,
-    root_path="/api"
+    root_path="/api",
+    lifespan=lifespan
 )
 
 # Create uploads directory if it doesn't exist
