@@ -36,6 +36,7 @@ env/
 uploads/*
 !uploads/.gitkeep
 postgres_data/
+pg_service.conf
 
 # Logs
 *.log

@@ -1,0 +1,9 @@
+# PostgreSQL service configuration file
+# This file defines connection parameters for database services
+
+[giswater_hengine]
+host=postgres
+port=5432
+dbname=giswater_hengine
+user=postgres
+password=${POSTGRES_PASSWORD}

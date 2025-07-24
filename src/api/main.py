@@ -26,9 +26,9 @@ async def lifespan(app: FastAPI):
         print("Database tables created successfully")
     except Exception as e:
         print(f"Error creating database tables: {e}")
-    
+
     yield
-    
+
     # Shutdown
     print("Application shutting down")
 

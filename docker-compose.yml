@@ -6,13 +6,47 @@ services:
     volumes:
       - ./uploads:/app/uploads
       - .:/app
+      - ./pg_service.conf.template:/tmp/pg_service.conf.template:ro
     environment:
       - ENV=development
+      - PGSERVICE=giswater_hengine
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - WS_SCHEMA=ws_42
+      - UD_SCHEMA=ud_42
+      - AUDIT_SCHEMA=audit
+    command: >
+      sh -c "mkdir -p /etc/postgresql-common &&
+             sed 's/\${POSTGRES_PASSWORD}/'\"$$POSTGRES_PASSWORD\"'/g' /tmp/pg_service.conf.template > /etc/postgresql-common/pg_service.conf &&
+             cd /app &&
+             exec python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     networks:
-      api-network:
+      api-network-2:
         ipv4_address: 172.21.1.51
 
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=giswater_hengine
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      api-network-2:
+        ipv4_address: 172.21.1.52
+
 networks:
-  api-network:
+  api-network-2:
     external: true
