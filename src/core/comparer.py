@@ -13,22 +13,22 @@ VARIABLE_MAP: dict[str, dict[str, int]] = {
         'demand': tk.DEMAND,
         'head': tk.HEAD,
         'pressure': tk.PRESSURE,
-        # 'quality': tk.QUALITY,
-        # 'source_mass': tk.SOURCEMASS
+        'quality': tk.QUALITY,
+        'source_mass': tk.SOURCEMASS
     },
     'RESERVOIRS': {
         'inflow': tk.DEMAND,
         'elevation': tk.HEAD,
-        # 'quality': tk.QUALITY,
-        # 'source_mass': tk.SOURCEMASS
+        'quality': tk.QUALITY,
+        'source_mass': tk.SOURCEMASS
     },
     'TANKS': {
         'inflow': tk.DEMAND,
         'elevation': tk.HEAD,
         'tank_level': tk.TANKLEVEL,
         'tank_volume' : tk.TANKVOLUME,
-        # 'quality': tk.QUALITY,
-        # 'source_mass': tk.SOURCEMASS
+        'quality': tk.QUALITY,
+        'source_mass': tk.SOURCEMASS
     },
     'PIPES': {
         'flow': tk.FLOW,
@@ -50,7 +50,7 @@ VARIABLE_MAP: dict[str, dict[str, int]] = {
     'PUMPS': {
         'flow': tk.FLOW,
         'velocity': tk.VELOCITY,
-        'head': tk.HEADLOSS,
+        'head': tk.HEAD,
         'energy': tk.ENERGY,
         'pump_efficiency' : tk.PUMP_EFFIC,
         'pump_state': tk.PUMP_STATE
@@ -70,8 +70,7 @@ class Comparer:
 
     def __init__(
         self,
-        inp1: str,
-        inp2: str,
+        inp_files: List,
         element_filter: List| None = None,
         id_filter: List| None = None,
         variable_filter: List| None = None
@@ -81,15 +80,14 @@ class Comparer:
         report/binary file names.
 
         Args:
-            inp1: Path to first EPANET .inp file.
-            inp2: Path to second EPANET .inp file.
-            rpt: Optional report file name for both runs.
-            out: Optional binary output file name for both runs.
+            inp_files: List with path to  EPANET .inp files to compare.
+            element_filter
+            id_filter
+            variable_filter
         """
-        self.inp1 = inp1
-        self.inp2 = inp2
-        self._handle1: int | None = None
-        self._handle2: int | None = None
+        assert len(inp_files) > 1, "Almost 2 files should be compared!"
+        self.inp_files = inp_files
+        self._handles = []
         self.element_filter = element_filter
         self.id_filter = id_filter
         self.variable_filter = variable_filter
@@ -113,184 +111,208 @@ class Comparer:
         tk.deleteproject(handle)
         
 
-    def _check_consistency(self):
-        # Check flow units.
-        fu1 = tk.getflowunits(self._handle1)
-        fu2 = tk.getflowunits(self._handle2)
-        assert fu1 == fu2, "Flow units are different!"
-        # Check headloss form.
-        hl1 = tk.getoption(self._handle1, tk.HEADLOSSFORM)
-        hl2 = tk.getoption(self._handle2, tk.HEADLOSSFORM)
-        assert hl1 == hl2, "Headloss forms are different!"
-        for param in [tk.DURATION, tk.HYDSTEP, tk.QUALSTEP]:
-            t_p1 = tk.gettimeparam(self._handle1, param)
-            t_p2 = tk.gettimeparam(self._handle2, param)
-            assert t_p1 == t_p2, "Time paramenters are different!"
-        # Check quality type analysis.
-        qa1 = tk.getqualtype(self._handle1)
-        qa2 = tk.getqualtype(self._handle2)
-        assert qa1 == qa2, "Type analysis are different!"
+    def _check_consistency(self) -> None:
+        """
+        Verify that both models use identical simulation settings:
+        - Flow units
+        - Headloss formula
+        - Time parameters (duration, hydro step, quality step)
+        - Quality analysis type
+        """
+        # 1. Compare flow units.
+        base_fu = tk.getflowunits(self._handles[0])
+        for h in self._handles[1:]:
+            fu = tk.getflowunits(h)
+            if fu != base_fu:
+                raise RuntimeError(f"Flow units differ: {base_fu} vs {fu}")
         
+        # 2. Compare headloss formula.
+        base_hl = tk.getoption(self._handles[0], tk.HEADLOSSFORM)
+        for h in self._handles[1:]:
+            hl = tk.getoption(h, tk.HEADLOSSFORM)
+            if hl != base_hl:
+                raise RuntimeError(f"Headloss formula differs: {base_hl} vs {hl}")
+
+        # 3. Compare key time parameters.
+        params = {
+            'DURATION': tk.DURATION,
+            'HYDSTEP':  tk.HYDSTEP,
+            'QUALSTEP': tk.QUALSTEP,
+        }
+        for name, code in params.items():
+            base_val = tk.gettimeparam(self._handles[0], code)
+            for h in self._handles[1:]:
+                val = tk.gettimeparam(h, code)
+                if val != base_val:
+                    raise RuntimeError(
+                        f"Time parameter {name} differs: {base_val} vs {val}"
+                    )
+    
+        # 4. Compare quality analysis type.
+        base_qt, _ = tk.getqualtype(self._handles[0])
+        for h in self._handles[1:]:
+            qt, _ = tk.getqualtype(h)
+            if qt != base_qt:
+                raise RuntimeError(
+                    f"Quality analysis type differs: {base_qt} vs {qt}"
+                )
+
+    def _collect(self, handles, element_ids, element_type, variable_filter) -> None:
+        def _is_node(element_type):
+            if element_type in ["JUNCTIONS", "RESERVOIRS", "TANKS"]:
+                return True
+            return False
+        
+        for element_id in element_ids:
+            print("+"*30)
+            print(element_type, ":", element_id)
+            model_index = 0
+            for handle in handles:
+                model_index += 1
+                print("> Model #", model_index)
+                if _is_node(element_type):
+                    index = tk.getnodeindex(handle, element_id)
+                else:
+                    index = tk.getlinkindex(handle, element_id)
+                for variable, code in VARIABLE_MAP[element_type].items():
+                    if variable_filter is None or variable in variable_filter:
+                        if _is_node(element_type):
+                            value = tk.getnodevalue(handle, index, code)
+                        else:
+                            value = tk.getlinkvalue(handle, index, code)
+                        print(">>", variable, "=", value)        
+
     def run(self):
         # Open proyect handles
-        assert self.inp1 != self.inp2, "Files should be different!"
-        self._handle1 = self._open(self.inp1)
-        self._handle2 = self._open(self.inp2)
+        check = len(self.inp_files) == len(set(self.inp_files))
+        assert check, "Files should be different!"
+        for inp_file in self.inp_files:
+            handle =  self._open(inp_file)
+            self._handles.append(handle)
 
         # Check consistency between models.
         self._check_consistency()
         
         # Filtering.
         junctions, reservoirs, tanks = [], [], []
-        node_count = tk.getcount(self._handle1, tk.NODECOUNT)
+        node_count = tk.getcount(self._handles[0], tk.NODECOUNT)
         print("Node count:", node_count)
         for nindex in range(1, node_count + 1):
-            node_id = tk.getnodeid(self._handle1, nindex)
-            node_type = tk.getnodetype(self._handle1, nindex)
+            element_id = tk.getnodeid(self._handles[0], nindex)
+            node_type = tk.getnodetype(self._handles[0], nindex)
             match node_type:
                 case tk.JUNCTION:
                     if self.element_filter is None or 'JUNCTIONS' in self.element_filter:
-                        if self.id_filter is None or node_id in self.id_filter:
-                            junctions.append(node_id)
-                            print('Add JUNCTION: ', node_id)
+                        if self.id_filter is None or element_id in self.id_filter:
+                            junctions.append(element_id)
+                            print('Add JUNCTION: ', element_id)
                 case tk.RESERVOIR:
                     if self.element_filter is None or 'RESERVOIRS' in self.element_filter:
-                        if self.id_filter is None or node_id in self.id_filter:
-                            reservoirs.append(node_id)
-                            print('Add RESERVOIR: ', node_id)
+                        if self.id_filter is None or element_id in self.id_filter:
+                            reservoirs.append(element_id)
+                            print('Add RESERVOIR: ', element_id)
                 case tk.TANK:
                     if self.element_filter is None or 'TANKS' in self.element_filter:
-                        if self.id_filter is None or node_id in self.id_filter:
-                            tanks.append(node_id)
-                            print('Add TANK: ', node_id)            
+                        if self.id_filter is None or element_id in self.id_filter:
+                            tanks.append(element_id)
+                            print('Add TANK: ', element_id)            
         pipes, valves, pumps = [], [], []
-        link_count = tk.getcount(self._handle1, tk.LINKCOUNT)
+        link_count = tk.getcount(self._handles[0], tk.LINKCOUNT)
         print("Link count:", link_count)
         for lindex in range(1, link_count + 1):
-            link_id = tk.getlinkid(self._handle1, lindex)
-            link_type = tk.getlinktype(self._handle1, lindex)
+            element_id = tk.getlinkid(self._handles[0], lindex)
+            link_type = tk.getlinktype(self._handles[0], lindex)
             match link_type:
                 case tk.PIPE:
                     if self.element_filter is None or 'PIPES' in self.element_filter:
-                        if self.id_filter is None or link_id in self.id_filter:
-                            pipes.append(link_id)
-                            print('Add PIPE: ', link_id)
+                        if self.id_filter is None or element_id in self.id_filter:
+                            pipes.append(element_id)
+                            print('Add PIPE: ', element_id)
                 case tk.PUMP:
                     if self.element_filter is None or 'PUMPS' in self.element_filter:
-                        if self.id_filter is None or link_id in self.id_filter:
-                            pumps.append(link_id)
-                            print('Add PUMP: ', link_id)   
+                        if self.id_filter is None or element_id in self.id_filter:
+                            pumps.append(element_id)
+                            print('Add PUMP: ', element_id)   
                 case _:
                     if self.element_filter is None or 'VALVES' in self.element_filter:
-                        if self.id_filter is None or link_id in self.id_filter:
-                            valves.append(link_id)
-                            print('Add VALVE: ', link_id)
+                        if self.id_filter is None or element_id in self.id_filter:
+                            valves.append(element_id)
+                            print('Add VALVE: ', element_id)
         
         # Get results
-        duration = tk.gettimeparam(self._handle1, tk.DURATION)
-        quality_analysis_type, _ = tk.getqualtype(self._handle1)
-        if quality_analysis_type == tk.NONE:
-            # Hydraulic analysis.
-            tk.openH(self._handle1)
-            tk.openH(self._handle2)
-            tk.initH(self._handle1, 00)
-            tk.initH(self._handle2, 00)          
+        duration = tk.gettimeparam(self._handles[0], tk.DURATION)
+        print("Model duration =", duration)
+        quality_analysis_type, _ = tk.getqualtype(self._handles[0])
+        print("Quality Analysis =", quality_analysis_type != tk.NONE)
+        
+     
+        # Start Hydraulic analysis.
+        for handle in self._handles:
+            tk.openH(handle)
+            tk.initH(handle, 00)
+       
+        # Start quality analysisis.
+        if quality_analysis_type != tk.NONE: 
+             for handle in self._handles:
+                 tk.openQ(handle)
+                 tk.initQ(handle, 00)
+        
+        # Solve loop.
+        loop_count = 0
+        print("*"*30)
+        while True:
+            loop_count += 1
+            print("Loop count =", loop_count)
             
-            # Solve.
-            while True:
-                # Run sep.
-                time = tk.runH(self._handle1)
-                tk.runH(self._handle2)
-                print("Time = ", time)
+            # Run hydraulic step.
+            time_h = tk.runH(self._handles[0])
+            print("Time hydraulic =", time_h)
+            for handle in self._handles[1:]:
+                time_h2 = tk.runH(handle)
+                assert time_h == time_h2, "Error!"
                 
-                # Store results.
-                for node_id in junctions:
-                    print("Junction:", node_id)
-                    nindex_1 = tk.getnodeindex(self._handle1, node_id)
-                    nindex_2 = tk.getnodeindex(self._handle2, node_id)
-                    for variable, code in VARIABLE_MAP["JUNCTIONS"].items():
-                        if self.variable_filter is None or variable in self.variable_filter:
-                            value_1 = tk.getnodevalue(self._handle1, nindex_1, code)
-                            value_2 = tk.getnodevalue(self._handle2, nindex_2, code)
-                            print(variable, end=" = ")
-                            print("Value 1:", value_1, "Value 2:", value_2)
-                            
-                for node_id in reservoirs:
-                    print("Reservoir:", node_id)
-                    nindex_1 = tk.getnodeindex(self._handle1, node_id)
-                    nindex_2 = tk.getnodeindex(self._handle2, node_id)
-                    for variable, code in VARIABLE_MAP["RESERVOIRS"].items():
-                        if self.variable_filter is None or variable in self.variable_filter:
-                            value_1 = tk.getnodevalue(self._handle1, nindex_1, code)
-                            value_2 = tk.getnodevalue(self._handle2, nindex_2, code)
-                            print(variable, end=" = ")
-                            print("Value 1:", value_1, "Value 2:", value_2)
-                            
-                for node_id in tanks:
-                    print("Tank:", node_id)
-                    nindex_1 = tk.getnodeindex(self._handle1, node_id)
-                    nindex_2 = tk.getnodeindex(self._handle2, node_id)
-                    for variable, code in VARIABLE_MAP["TANKS"].items():     
-                        if self.variable_filter is None or variable in self.variable_filter:
-                            value_1 = tk.getnodevalue(self._handle1, nindex_1, code)
-                            value_2 = tk.getnodevalue(self._handle2, nindex_2, code)
-                            print(variable, end=" = ")
-                            print("Value 1:", value_1, "Value 2:", value_2)
-               
-                for link_id in pipes:
-                    print("Pipe:", link_id)
-                    lindex_1 = tk.getlinkindex(self._handle1, link_id)
-                    lindex_2 = tk.getlinkindex(self._handle2, link_id)
-                    for variable, code in VARIABLE_MAP["PIPES"].items():
-                        if self.variable_filter is None or variable in self.variable_filter:
-                            value_1 = tk.getlinkvalue(self._handle1, lindex_1, code)
-                            value_2 = tk.getlinkvalue(self._handle2, lindex_2, code)
-                            print(variable, end=" = ")
-                            print("Value 1:", value_1, "Value 2:", value_2)
-                            
-                for link_id in valves:
-                    print("Valve:", link_id)
-                    lindex_1 = tk.getlinkindex(self._handle1, link_id)
-                    lindex_2 = tk.getlinkindex(self._handle2, link_id)
-                    for variable, code in VARIABLE_MAP["VALVES"].items():
-                        if self.variable_filter is None or variable in self.variable_filter:
-                            value_1 = tk.getlinkvalue(self._handle1, lindex_1, code)
-                            value_2 = tk.getlinkvalue(self._handle2, lindex_2, code)
-                            print(variable, end=" = ")
-                            print("Value 1:", value_1, "Value 2:", value_2)
-                            
-                for link_id in pumps:
-                    print("Pump:", link_id)
-                    lindex_1 = tk.getlinkindex(self._handle1, link_id)
-                    lindex_2 = tk.getlinkindex(self._handle2, link_id)
-                    for variable, code in VARIABLE_MAP["PUMPS"].items():     
-                        if self.variable_filter is None or variable in self.variable_filter:
-                            value_1 = tk.getlinkvalue(self._handle1, lindex_1, code)
-                            value_2 = tk.getlinkvalue(self._handle2, lindex_2, code)
-                            print(variable, end=" = ")
-                            print("Value 1:", value_1, "Value 2:", value_2)
-               
-                # End of loop.
-                if time == duration:
-                    break
-                else:
-                    tk.nextH(self._handle1)
-                    tk.nextH(self._handle2)
-                
-            tk.closeH(self._handle1)
-            tk.closeH(self._handle2)
-        else:
-            # Quality analysis.
-            pass
-
+            # Computes qality models.
+            if quality_analysis_type != tk.NONE:
+                model_index = 0
+                for handle in self._handles:
+                    model_index += 1
+                    while True:
+                        time_q = tk.runQ(handle)
+                        tk.nextQ(handle)
+                        if time_q == time_h:
+                            break
+                print("Time quality =", time_q)
+            
+            # Store results.
+            self._collect(self._handles, junctions, "JUNCTIONS", self.variable_filter)
+            self._collect(self._handles, reservoirs, "RESERVOIRS", self.variable_filter)
+            self._collect(self._handles, tanks, "TANKS", self.variable_filter)                
+            self._collect(self._handles, pipes, "PIPES", self.variable_filter)
+            self._collect(self._handles, valves, "VALVES", self.variable_filter)
+            self._collect(self._handles, pumps, "PUMPS", self.variable_filter)
+            
+            # Advance time.
+            next_h = tk.nextH(self._handles[0])
+            for handle in self._handles[1:]:
+                next_h2 = tk.nextH(handle)
+                assert next_h == next_h2, "Error!"
+            print("*"*30)
+            
+            # End of loop.
+            if next_h == 0:
+                break    
 
         # Close project handles
-        self._close(self._handle1)
-        self._close(self._handle2)
+        for handle in self._handles:
+            self._close(handle)
 
 
 if __name__ == '__main__':
-    inp1 = "D:\MODELOS\example_1.inp"
-    inp2 = "D:\MODELOS\example_2.inp"
-    comp = Comparer(inp1, inp2, ["TANKS", "PUMPS"], ["Tank", "Pump"], ["tank_volume", "pump_state", "energy"])
+    inp_files = ["D:\MODELOS\example_1Q.inp", "D:\MODELOS\example_2Q.inp"]
+    comp = Comparer(inp_files,
+                    None,
+                    ["J08", "Well",  "Tank"],
+# %%
+                    ["pressure", "tank_volume", "quality", "head"]
+    )
     comp.run()
