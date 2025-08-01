@@ -190,13 +190,3 @@ class Calibration:
             # End of loop.
             if next_h == 0:
                 break    
-
-
-if __name__ == "__main__":
-    inp_file = r"D:\MODELOS\CIb-CAL.inp"
-    obs_file = r"D:\MODELOS\CIb-Pressure.dat"
-    # pass observations as keyword args
-    calib = Calibration(inp_file, pressure=obs_file)
-    # inspect loaded data
-    for elem, series in calib.variables["pressure"].elements.items():
-        print(elem, series[:5])

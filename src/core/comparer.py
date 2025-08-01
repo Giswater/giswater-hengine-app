@@ -305,14 +305,3 @@ class Comparer:
         # Close project handles
         for handle in self._handles:
             self._close(handle)
-
-
-if __name__ == '__main__':
-    inp_files = ["D:\MODELOS\example_1Q.inp", "D:\MODELOS\example_2Q.inp"]
-    comp = Comparer(inp_files,
-                    None,
-                    ["J08", "Well",  "Tank"],
-# %%
-                    ["pressure", "tank_volume", "quality", "head"]
-    )
-    comp.run()
