@@ -32,3 +32,6 @@ def test_print_first_pressure_values(test_files):
 
     for elem, series in pressure_data.elements.items():
         print(f"{elem}: {series[:5]}")
+    
+    # Display calibration report.
+    calib.calibrate()
