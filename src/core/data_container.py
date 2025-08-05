@@ -1,283 +1,547 @@
 """
-data_container.py
+data_container module.
 
-Defines DataContainer for storing time-series simulation results
-organized by scenario, element type, element ID, and variable.
-Enforces fixed interval between consecutive entries per scenario.
-Uses efficient storage: flat arrays for floats and bit arrays for status.
-Provides utility methods for metadata access.
-Includes integrated unit tests when run as main.
+Defines TimeSeries and DataContainer classes.
+
+TimeSeries: manage a series of (time, value) tuples with a single scalar value.
+DataContainer: store multiple TimeSeries indexed by (element_type, element_id,
+variable, value_source), with units.
 """
-
 from __future__ import annotations
-
-from collections import deque, defaultdict
-from datetime import datetime, timedelta
 from array import array
+from typing import Dict, Iterable, List, Optional, Tuple, Union
+import math
 
 
-class DataContainer:
+class TimeSeries:
+    """
+    Manage time series of (time, value) tuples using arrays.
+
+    time: seconds (float)
+    value: float or bool
+    """
+
     def __init__(
         self,
-        interval: timedelta,
-    ):
-        """
-        Init container for simulation results.
+        dtype: type = float
+    ) -> None:
+        self._dtype: type = dtype
+        self._is_uniform: bool = True
+        self._initial_time: Optional[float] = None
+        self._delta_time: Optional[float] = None
+        self._count: int = 0
+        self._times: Optional[array] = None
+        self._values: Optional[array] = None
+        self._time_code: str = 'd'
+        self._value_code: str = (
+            'b' if self._dtype is bool else 'd'
+        )
 
-        Args:
-            interval: Required interval between consecutive timestamps per scenario.
-        """
-        self.interval = interval
-        # storage per scenario
-        self._data: dict[str, deque[tuple[datetime, dict]]] = defaultdict(deque)
-        # schema per scenario
-        self._schema: dict[str, dict[str, dict[str, set[str]]]] = {}
-        # efficient storage indexes and data per scenario
-        self._float_index: dict[str, dict[tuple[str, str, str], int]] = {}
-        self._status_index: dict[str, dict[tuple[str, str, str], int]] = {}
-        self._float_data: dict[str, deque[array]] = defaultdict(deque)
-        self._status_data: dict[str, deque[array]] = defaultdict(deque)
+    def __len__(self) -> int:
+        return self._count
+
+    def __iter__(self) -> Iterable:
+        return self.items()
 
     def add(
         self,
-        timestamp: datetime,
-        *args,
+        time: float,
+        value: Union[float, bool]
     ) -> None:
-        """Store results for a scenario at given timestamp.
-
-        Usage:
-            add(timestamp, results)
-            add(timestamp, scenario, results)
-
-        If no scenario name is provided, uses 'default'.
-
-        Args:
-            timestamp: datetime for this data point.
-            scenario: Optional scenario name to store data under (default 'default').
-            results: Nested dict of element_type -> element_id -> var -> value.
         """
-        # unpack args
-        if len(args) == 1:
-            scenario = 'default'
-            results = args[0]
-        elif len(args) == 2:
-            scenario, results = args
-        else:
-            raise TypeError(f"add() takes 2 or 3 positional arguments but {1 + len(args)} were given")
+        Append (time, value); allow out-of-order times.
+        Detect uniformity and free _times when uniform.
+        """
+        t = float(time)
+        v = self._dtype(value)
 
-        dq = self._data[scenario]
-        if dq:
-            expected = dq[-1][0] + self.interval
-            if timestamp != expected:
+        # first point
+        if self._count == 0:
+            self._initial_time = t
+            self._times = array(
+                self._time_code,
+                [t]
+            )
+            self._values = array(
+                self._value_code,
+                [
+                    int(v) if self._dtype is bool else v
+                ]
+            )
+            self._count = 1
+            return
+
+        assert self._times and self._values
+
+        # duplicate time?
+        for tt in self._times:
+            if abs(tt - t) < 1e-9:
                 raise ValueError(
-                    f"{scenario}: expected timestamp {expected.isoformat()}, got {timestamp.isoformat()}"
+                    f"Duplicate time {t}"
                 )
-        # schema capture or validation per scenario
-        if scenario not in self._schema:
-            schema = {
-                etype: {eid: set(vars.keys()) for eid, vars in elems.items()}
-                for etype, elems in results.items()
+
+        # derive delta on second point
+        if self._is_uniform and self._count == 1:
+            self._delta_time = (
+                t - self._initial_time  # type: ignore
+            )
+
+        # append
+        self._times.append(t)
+        self._values.append(
+            int(v) if self._dtype is bool else v
+        )
+        self._count += 1
+
+        # uniform check
+        if self._is_uniform:
+            exp = (
+                self._initial_time  # type: ignore
+                + (self._count - 1)
+                * self._delta_time  # type: ignore
+            )
+            if abs(t - exp) < 1e-9:
+                return
+            self._is_uniform = False
+            return
+
+        # check regained uniformity
+        if not self._is_uniform and self._count >= 3:
+            pairs = list(zip(
+                self._times,
+                self._values
+            ))
+            pairs.sort(key=lambda x: x[0])
+            ts = [p[0] for p in pairs]
+            vs = [p[1] for p in pairs]
+            diffs = [
+                ts[i+1] - ts[i]
+                for i in range(len(ts)-1)
+            ]
+            d0 = diffs[0]
+            if all(
+                abs(d - d0) < 1e-9
+                for d in diffs
+            ):
+                self._initial_time = ts[0]
+                self._delta_time = d0
+                self._values = array(
+                    self._value_code,
+                    vs
+                )
+                self._times = None
+                self._count = len(vs)
+                self._is_uniform = True
+
+    def value(
+        self,
+        time: float
+    ) -> Union[float, bool]:
+        """
+        Return value at time or KeyError.
+        """
+        t = float(time)
+        if self._count == 0:
+            raise KeyError(
+                f"Time {t} out of range"
+            )
+
+        if (
+            self._is_uniform
+            and self._delta_time is not None
+        ):
+            idx = int(round(
+                (t - self._initial_time)
+                / self._delta_time  # type: ignore
+            ))
+            if 0 <= idx < self._count:
+                exp = (
+                    self._initial_time
+                    + idx
+                    * self._delta_time  # type: ignore
+                )
+                if abs(exp - t) < 1e-9:
+                    val = self._values[idx]
+                    return (
+                        bool(val)
+                        if self._dtype is bool
+                        else val
+                    )
+            raise KeyError(
+                f"Time {t} out of range"
+            )
+
+        # non-uniform lookup
+        assert self._times
+        for tt, vv in zip(
+            self._times,
+            self._values
+        ):
+            if abs(tt - t) < 1e-9:
+                return (
+                    bool(vv)
+                    if self._dtype is bool
+                    else vv
+                )
+        raise KeyError(
+            f"Time {t} not found"
+        )
+
+    def update(
+        self,
+        time: float,
+        value: Union[float, bool]
+    ) -> None:
+        """
+        Update value at time or KeyError.
+        """
+        t = float(time)
+        v = self._dtype(value)
+        if self._count == 0:
+            raise KeyError(
+                f"Time {t} out of range"
+            )
+
+        if (
+            self._is_uniform
+            and self._delta_time is not None
+        ):
+            idx = int(round(
+                (t - self._initial_time)
+                / self._delta_time  # type: ignore
+            ))
+            if 0 <= idx < self._count:
+                exp = (
+                    self._initial_time
+                    + idx
+                    * self._delta_time  # type: ignore
+                )
+                if abs(exp - t) < 1e-9:
+                    self._values[idx] = (
+                        int(v)
+                        if self._dtype is bool
+                        else v
+                    )
+                    return
+            raise KeyError(
+                f"Time {t} out of range"
+            )
+
+        assert self._times
+        for i, tt in enumerate(self._times):
+            if abs(tt - t) < 1e-9:
+                self._values[i] = (
+                    int(v)
+                    if self._dtype is bool
+                    else v
+                )
+                return
+        raise KeyError(
+            f"Time {t} not found"
+        )
+
+    def drop(
+        self,
+        time: float
+    ) -> None:
+        """
+        Remove entry at time or KeyError.
+        """
+        t = float(time)
+        if self._count == 0:
+            raise KeyError(
+                f"Time {t} out of range"
+            )
+
+        if self._is_uniform:
+            self._is_uniform = False
+            self._times = array(
+                self._time_code,
+                [
+                    self._initial_time  # type: ignore
+                    + i
+                    * self._delta_time  # type: ignore
+                    for i in range(
+                        self._count
+                    )
+                ]
+            )
+
+        assert self._times
+        for i, tt in enumerate(self._times):
+            if abs(tt - t) < 1e-9:
+                self._times.pop(i)
+                self._values.pop(i)
+                self._count -= 1
+                return
+        raise KeyError(
+            f"Time {t} not found"
+        )
+
+    def times(self) -> Iterable[float]:
+        """Yield times."""
+        if (
+            self._is_uniform
+            and self._delta_time is not None
+        ):
+            return (
+                self._initial_time  # type: ignore
+                + i
+                * self._delta_time  # type: ignore
+                for i in range(
+                    self._count
+                )
+            )
+        assert self._times
+        return iter(self._times)
+
+    def values(
+        self
+    ) -> Iterable[Union[float, bool]]:
+        """Yield values."""
+        return (
+            bool(v)
+            if self._dtype is bool
+            else v
+            for v in self._values  # type: ignore
+        )
+
+    def items(
+        self
+    ) -> Iterable[Tuple[float, Union[float, bool]]]:
+        """Yield (time, value) tuples."""
+        return zip(
+            self.times(),
+            self.values()
+        )
+
+    def time_is_uniform(
+        self
+    ) -> Tuple[bool, Optional[Dict[str, float]]]:
+        """Return (is_uniform, params)."""
+        if self._is_uniform:
+            return True, {
+                "initial_time":
+                self._initial_time,  # type: ignore
+                "delta_time":
+                self._delta_time,     # type: ignore
+                "count": self._count
             }
-            self._schema[scenario] = schema
-            fidx, sidx = {}, {}
-            fcount = scount = 0
-            for etype, elems in sorted(schema.items()):
-                for eid, vars in sorted(elems.items()):
-                    for var in sorted(vars):
-                        key = (etype, eid, var)
-                        val = results[etype][eid][var]
-                        if isinstance(val, str):
-                            sidx[key] = scount
-                            scount += 1
-                        else:
-                            fidx[key] = fcount
-                            fcount += 1
-            self._float_index[scenario] = fidx
-            self._status_index[scenario] = sidx
-        else:
-            schema = self._schema[scenario]
-            if set(results.keys()) != set(schema.keys()):
-                raise ValueError(f"{scenario}: element types mismatch schema")
-            for etype, elems in results.items():
-                if set(elems.keys()) != set(schema[etype].keys()):
-                    raise ValueError(f"{scenario}:{etype}: IDs mismatch schema")
-                for eid, vars in elems.items():
-                    if set(vars.keys()) != schema[etype][eid]:
-                        raise ValueError(f"{scenario}:{etype}:{eid}: vars mismatch schema")
-        dq.append((timestamp, results))
-        # pack into efficient arrays
-        fidx = self._float_index[scenario]
-        sidx = self._status_index[scenario]
-        floats = array('d', [0.0] * len(fidx))
-        statuses = array('B', [0] * len(sidx))
-        for (etype, eid, var), idx in fidx.items():
-            floats[idx] = results[etype][eid][var]
-        for (etype, eid, var), idx in sidx.items():
-            statuses[idx] = 1 if results[etype][eid][var] == 'OPEN' else 0
-        self._float_data[scenario].append(floats)
-        self._status_data[scenario].append(statuses)
+        return False, None
+
+    def variable_type(self) -> str:
+        """Return 'float' or 'boolean'."""
+        return (
+            "boolean"
+            if self._dtype is bool
+            else "float"
+        )
+
+    def statistics(self) -> Dict[str, Union[int, float, None]]:
+        """
+        Return basic stats: count, mean, std.
+        """
+        vals = list(self.values())
+        n = len(vals)
+        if n == 0:
+            return {"count": 0, "mean": None, "std": None}
+        mean = sum(vals) / n
+        variance = sum((x - mean) ** 2 for x in vals) / n
+        std = math.sqrt(variance)
+        return {"count": n, "mean": mean, "std": std}
+
+    def calibrate(
+        self,
+        other: 'TimeSeries'
+    ) -> Dict[str, Union[int, float, None]]:
+        """
+        Compare this series with another over common times.
+        Returns count, mean_self, mean_other, mean_error, rmse.
+        """
+        t1 = set(self.times())
+        t2 = set(other.times())
+        common = sorted(t1 & t2)
+        n = len(common)
+        if n == 0:
+            return {
+                "count": 0,
+                "mean_self": None,
+                "mean_other": None,
+                "mean_error": None,
+                "rmse": None
+            }
+        vals1 = [self.value(t) for t in common]
+        vals2 = [other.value(t) for t in common]
+        errors = [v1 - v2 for v1, v2 in zip(vals1, vals2)]
+        mean1 = sum(vals1) / n
+        mean2 = sum(vals2) / n
+        mean_err = sum(errors) / n
+        rmse = math.sqrt(sum(e * e for e in errors) / n)
+        return {
+            "count": n,
+            "mean_self": mean1,
+            "mean_other": mean2,
+            "mean_error": mean_err,
+            "rmse": rmse
+        }
+
+    def correlation(
+        self,
+        series_list: List['TimeSeries']
+    ) -> Dict[Tuple[int, int], float]:
+        """
+        Compute Pearson correlation coefficients between each pair
+        in the provided list of series.
+        Returns a dict mapping (i,j) -> corr.
+        """
+        results: Dict[Tuple[int, int], float] = {}
+        for i in range(len(series_list)):
+            for j in range(i + 1, len(series_list)):
+                s1 = series_list[i]
+                s2 = series_list[j]
+                t1 = set(s1.times())
+                t2 = set(s2.times())
+                common = t1 & t2
+                n = len(common)
+                if n == 0:
+                    results[(i, j)] = float('nan')
+                    continue
+                vals1 = [s1.value(t) for t in common]
+                vals2 = [s2.value(t) for t in common]
+                m1 = sum(vals1) / n
+                m2 = sum(vals2) / n
+                num = sum((a - m1) * (b - m2) for a, b in zip(vals1, vals2))
+                denom = math.sqrt(
+                    sum((a - m1) ** 2 for a in vals1)
+                    * sum((b - m2) ** 2 for b in vals2)
+                )
+                corr = num / denom if denom != 0 else float('nan')
+                results[(i, j)] = corr
+        return results
+
+class DataContainer:
+    """
+    Store multiple TimeSeries indexed by element attributes and source.
+
+    Keys: (element_type, element_id, variable, value_source).
+    """
+
+    def __init__(self) -> None:
+        Key = Tuple[str, str, str, str]
+        self._series: Dict[Key, TimeSeries] = {}
+        self._units: Dict[Key, str] = {}
+
+    def add(
+        self,
+        ts: TimeSeries,
+        element_type: str,
+        element_id: str,
+        variable: str,
+        value_source: str,
+        units: str,
+    ) -> None:
+        """Add a TimeSeries under identifiers, storing its units."""
+        key = (element_type, element_id, variable, value_source)
+        self._series[key] = ts
+        self._units[key] = units
 
     def get(
         self,
-        scenarios: list[str] = None,
-        start_time: datetime = None,
-        end_time: datetime = None,
-        element_types: list[str] = None,
-        element_ids: list[str] = None,
-        variables: list[str] = None,
-    ) -> dict[str, dict[str, dict[str, dict[str, float|str]]]]:
-        """Query stored data with optional filters across scenarios.
+        element_type: str,
+        element_id: str,
+        variable: str,
+        value_source: str,
+    ) -> TimeSeries:
+        """Return the TimeSeries for the given identifiers or KeyError."""
+        key = (element_type, element_id, variable, value_source)
+        try:
+            return self._series[key]
+        except KeyError:
+            raise KeyError(f"No series for key {key}")
 
-        Args:
-            scenarios: list of scenario names to include (default all)
-            start_time: datetime start (inclusive)
-            end_time: datetime end (exclusive)
-            element_types: list of element types to include
-            element_ids: list of element IDs to include
-            variables: list of variable names to include
-        Returns:
-            Nested dict: {scenario: {timestamp_iso: {etype: {eid: {var: value}}}}}
+    def units(
+        self,
+        element_type: str,
+        element_id: str,
+        variable: str,
+        value_source: str,
+    ) -> str:
+        """Return the units for the given identifiers or KeyError."""
+        key = (element_type, element_id, variable, value_source)
+        try:
+            return self._units[key]
+        except KeyError:
+            raise KeyError(f"No units for key {key}")
+
+    def drop(self, element_type: str, element_id: str) -> None:
+        """Remove all series for given element_type and element_id."""
+        to_del = [
+            k for k in self._series
+            if k[0] == element_type and k[1] == element_id
+        ]
+        for k in to_del:
+            del self._series[k]
+            del self._units[k]
+
+    def element_types(self) -> Tuple[str, ...]:
+        """Return defined element types."""
+        return tuple(set(sorted({k[0] for k in self._series})))
+
+    def element_ids(self, element_type: str) -> Tuple[str, ...]:
+        """Return IDs for a given element_type."""
+        return tuple(
+            sorted(set(k[1] for k in self._series if k[0] == element_type))
+        )
+
+    def variables(self, element_type: str, element_id: str) -> Tuple[str, ...]:
+        """Return variables for given element_type and element_id."""
+        return tuple(
+            sorted(
+                set(
+                    k[2]
+                    for k in self._series
+                    if k[0] == element_type and k[1] == element_id
+                )
+            )
+        )
+
+    def value_sources(
+        self,
+        element_type: str,
+        element_id: str,
+        variable: str
+    ) -> Tuple[str, ...]:
+        """Return value_source strings for a given series key."""
+        return tuple(
+            sorted(
+                set(
+                    k[3]
+                    for k in self._series
+                    if (k[0], k[1], k[2]) == (element_type, element_id, variable)
+                )
+            )
+        )
+
+    def count(self) -> int:
+        """Return number of stored series."""
+        return len(self._series)
+
+    def total_points(self) -> int:
+        """Return total number of data points across all series."""
+        return sum(len(ts) for ts in self._series.values())
+
+    def total_memory(self) -> int:
         """
-        out: dict[str, dict[str, dict]] = {}
-        target_scenarios = scenarios or list(self._data.keys())
-        for sc in target_scenarios:
-            if sc not in self._data:
-                continue
-            sc_dict: dict[str, dict] = {}
-            dq = self._data[sc]
-            # filter element_ids by types if both provided
-            if element_types and element_ids is not None:
-                schema_sc = self._schema.get(sc, {})
-                filtered = []
-                for et in element_types:
-                    filtered.extend(eid for eid in schema_sc.get(et, {}) if eid in element_ids)
-                element_ids = filtered
-
-            fidx = self._float_index.get(sc, {})
-            sidx = self._status_index.get(sc, {})
-            for (ts, _), floats, statuses in zip(
-                dq,
-                self._float_data.get(sc, []),
-                self._status_data.get(sc, []),
-            ):
-                if start_time and ts < start_time:
-                    continue
-                if end_time and ts >= end_time:
-                    continue
-                ts_data: dict[str, dict] = {}
-                # floats
-                for (etype, eid, var), idx in fidx.items():
-                    if element_types and etype not in element_types:
-                        continue
-                    if element_ids and eid not in element_ids:
-                        continue
-                    if variables and var not in variables:
-                        continue
-                    ts_data.setdefault(etype, {}).setdefault(eid, {})[var] = floats[idx]
-                # statuses
-                for (etype, eid, var), idx in sidx.items():
-                    if element_types and etype not in element_types:
-                        continue
-                    if element_ids and eid not in element_ids:
-                        continue
-                    if variables and var not in variables:
-                        continue
-                    ts_data.setdefault(etype, {}).setdefault(eid, {})[var] = (
-                        'OPEN' if statuses[idx] == 1 else 'CLOSED'
-                    )
-                if ts_data:
-                    sc_dict[ts.isoformat()] = ts_data
-            if sc_dict:
-                out[sc] = sc_dict
-        return out
-
-    def get_start_timestamp(self) -> datetime | None:
-        """Return the earliest timestamp across all scenarios."""
-        all_ts = [dq[0][0] for dq in self._data.values() if dq]
-        return min(all_ts) if all_ts else None
-
-    def get_end_timestamp(self) -> datetime | None:
-        """Return the latest timestamp across all scenarios."""
-        all_ts = [dq[-1][0] for dq in self._data.values() if dq]
-        return max(all_ts) if all_ts else None
-
-    def get_time_count(self) -> int:
-        """Return number of timestamps (assumed uniform)."""
-        for dq in self._data.values():
-            return len(dq)
-        return 0
-
-    def get_num_scenarios(self) -> int:
-        """Return count of scenarios with data."""
-        return len(self._data)
-
-    def get_element_counts(self, scenario: str) -> dict[str, int]:
-        """Return mapping of element_type to element count for a specific scenario."""
-        schema = self._schema.get(scenario, {})
-        return {etype: len(eids) for etype, eids in schema.items()}
-
-    def get_variables(self, element_type: str) -> list[str]:
-        """Return sorted list of variable names for a given element_type (assumes uniform)."""
-        for schema in self._schema.values():
-            elems = schema.get(element_type, {})
-            return sorted(next(iter(elems.values()))) if elems else []
-        return []
-
-    def get_scenarios(self) -> list[str]:
-        """Return list of scenario names."""
-        return list(self._data.keys())
-
-
-# Integrated tests
-if __name__ == '__main__':
-    import unittest
-    from datetime import datetime, timedelta
-
-    class TestDataContainer(unittest.TestCase):
-        def setUp(self):
-            self.interval = timedelta(minutes=15)
-            self.start = datetime(2025, 7, 11, 0, 0)
-            counts = {'junction': 2, 'reservoir': 1}
-            self.scenarios = ['base', 'alt']
-            def make_sample(i):
-                sample = {}
-                status_str = 'OPEN' if i % 2 == 0 else 'CLOSED'
-                for etype, cnt in counts.items():
-                    sample[etype] = {}
-                    for idx in range(1, cnt+1):
-                        eid = f"{etype}{idx}"
-                        sample[etype][eid] = {'value': float(i), 'status': status_str}
-                return sample
-            total = 4
-            self.timestamps = [self.start + n*self.interval for n in range(total)]
-            self.samples = [make_sample(n) for n in range(total)]
-
-        def test_add_and_default(self):
-            dc = DataContainer(interval=self.interval)
-            for ts, sample in zip(self.timestamps, self.samples):
-                dc.add(ts, sample)
-            self.assertIn('default', dc.get_scenarios())
-            self.assertEqual(len(dc.get_scenarios()), 1)
-
-        def test_get_filters(self):
-            dc = DataContainer(interval=self.interval)
-            for sc in self.scenarios:
-                for ts, sample in zip(self.timestamps, self.samples):
-                    dc.add(ts, sc, sample)
-            # time filter
-            res = dc.get(start_time=self.timestamps[1], end_time=self.timestamps[3])
-            for sc, data in res.items():
-                for ts in data:
-                    self.assertGreaterEqual(datetime.fromisoformat(ts), self.timestamps[1])
-                    self.assertLess(datetime.fromisoformat(ts), self.timestamps[3])
-            # scenario filter
-            only_base = dc.get(scenarios=['base'])
-            self.assertListEqual(list(only_base.keys()), ['base'])
-            # element and id filter
-            vals = dc.get(element_types=['junction'], element_ids=['junction1'], variables=['value'])
-            for sc, data in vals.items():
-                for _, ets in data.items():
-                    self.assertIn('junction', ets)
-                    self.assertIn('junction1', ets['junction'])
-
-    unittest.main()
+        Return total memory usage in bytes:
+        for each TimeSeries, sum array lengths × itemsize.
+        """
+        tb = 0
+        for ts in self._series.values():
+            # values array always present
+            vals = ts._values  # type: ignore
+            tb += len(vals) * vals.itemsize
+            # times array only if non-uniform
+            if ts._times is not None:
+                times = ts._times  # type: ignore
+                tb += len(times) * times.itemsize
+        return tb
