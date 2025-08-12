@@ -714,12 +714,12 @@ if __name__ == "__main__":
                       'pump_speeds': {'Pump': 1.0}
     }
     # Print a simulation
-    counter = 300
+    counter = 10
     print("Time", "Value")
     while counter:
-        counter -=1
-        sim.run_step(data_to_update)
+        counter -= 1
         time = sim.current_time()
+        sim.run_step(data_to_update)
         variable = sim.results['junctions']["J08"]["loss"]
         # variable = sim.results['pumps']["Pump"]["energy"]
         print(f"{time } {variable:.6f}")
