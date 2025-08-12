@@ -1,6 +1,6 @@
 import os
 import pytest
-from src.core.calibrator import Calibration
+from src.core.calibrator import OptimizationProblem, calibrate
 
 # Directory where the test data files are located
 TEST_DATA_DIR = os.path.dirname(__file__)
@@ -13,25 +13,26 @@ def test_files():
         "pressure_file": os.path.join(TEST_DATA_DIR, "observed_pressure.dat"),
     }
 
-def test_print_first_pressure_values(test_files):
+
+def test_adjust_roughness(test_files):
     """
     Manual inspection test:
-    Prints the first five (time, observed, simulated) entries for each element.
+    Adjust the roughness of the model.
     """
-    inp_file = test_files["inp_file"]
-    obs_file = test_files["pressure_file"]
 
-    # Initialize the calibration using observation data
-    try:
-        calib = Calibration(inp_file, pressure=obs_file)
-    except Exception as e:
-        pytest.fail(f"Calibrator cannot load data: {e}")
-    
-    # Display a preview of the loaded pressure data
-    pressure_data = calib.variables.get("pressure")
+    inp_fname = test_files["inp_file"]
+    observed_data = { "pressure" : test_files["pressure_file"]}
 
-    for elem, series in pressure_data.elements.items():
-        print(f"{elem}: {series[:5]}")
-    
-    # Display calibration report.
-    calib.calibrate()
+    # Create an optimization problem
+    op = OptimizationProblem(inp_fname, observed_data)
+    op.set_bounds(0.001, 0.2)
+
+    # Print results.
+    print("-"*40)
+    print("Cheking some values.")
+    for x in [0.2, 0.1, .01, 0.001]:
+        print(f"For roughness {x} fitness is {op.fitness(x)}")
+    print('-'*40)
+    print("Using solver.")
+    print(calibrate(op))
+    print("-"*40)
