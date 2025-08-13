@@ -1,4 +1,5 @@
 import os
+import time
 import pytest
 from src.core.calibrator import OptimizationProblem, calibrate
 
@@ -29,10 +30,20 @@ def test_adjust_roughness(test_files):
 
     # Print results.
     print("-"*40)
-    print("Cheking some values.")
+    print("Checking some values.")
     for x in [0.2, 0.1, .01, 0.001]:
         print(f"For roughness {x} fitness is {op.fitness(x)}")
     print('-'*40)
     print("Using solver.")
-    print(calibrate(op))
+    res = calibrate(op)
+    print(f"X = {res.x} \nFitness: {res.fun}")
     print("-"*40)
+
+    # Performance.
+    time_counter = time.time()
+    op_number = 5
+    for i in range(op_number):
+        calibrate(op)
+    time_counter = time.time() - time_counter
+
+    print(f"Number of solutions per second : {op_number/time_counter}")
