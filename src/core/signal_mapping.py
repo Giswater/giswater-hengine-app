@@ -1,5 +1,5 @@
 """
-solver.py
+real_time_solver.py
 
 Provides RealTimeSolver for real-time hydraulic and quality
 simulation. Handles signal input, simulation steps, and
